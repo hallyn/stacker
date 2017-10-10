@@ -113,13 +113,162 @@ func (config *stackerConfig) Show() {
 	}
 }
 
+func (c *stackerConfig) UnpackDir() string {
+	switch c.FsType {
+	case "btrfs":
+		if c.BtrfsMount != "" {
+			return c.BtrfsMount + "/mounted"
+		}
+		return c.BaseDir + "/btrfs/mounted"
+	default:
+		return c.BaseDir + "unpacked"
+	}
+}
+
 var config = &stackerConfig{
 	BaseDir: ".",
 	OciDir: "./oci",
 	FsType: "vfs",
 }
 
-func doBuild() bool {
+// Unpack and repack operations.  These will be used by build,
+// unpack, checkout and checkin.
+
+type buildTarget struct {
+	target     string
+	base       string
+	run        []string
+	expand     []string
+	install    []string
+	entrypoint string
+}
+
+type buildRecipe struct {
+	Targets []buildTarget
+}
+
+func (bt *buildTarget) appendBase(i interface{}) error {
+	switch i.(type) {
+	case string:
+	default:
+		return fmt.Errorf("Parse error at %s", bt.target)
+	}
+	if bt.base != "" {
+		return fmt.Errorf("Duplicate base for %s", bt.target)
+	}
+	bt.base = i.(string)
+	return nil
+}
+
+func (bt *buildTarget) appendRun(i interface{}) error {
+	return nil
+}
+
+func (bt *buildTarget) appendInstall(i interface{}) error {
+	return nil
+}
+
+func (bt *buildTarget) appendExpand(i interface{}) error {
+	switch i.(type) {
+	case string:
+		bt.expand = append(bt.expand, i.(string))
+	case []interface{}:
+		for _, e := range i.([]interface{}) {
+			switch e.(type) {
+			case string:
+				bt.expand = append(bt.expand, e.(string))
+			default:
+				return fmt.Errorf("Parse error at %s for expand", bt.target)
+			}
+		}
+	default:
+		return fmt.Errorf("Parse error at %s for expand", bt.target)
+	}
+	return nil
+}
+
+func (bt *buildTarget) appendCmd(i interface{}) error {
+	return nil
+}
+
+// Parse a recipe that looks like:
+// target1:
+//   base: empty
+//   expand: some.tar.xz
+// target2:
+//   base: target1
+//   run: echo hw > /helloworld
+func parseRecipe(contents []byte) (r *buildRecipe, err error) {
+	var i interface{}
+	r = &buildRecipe{}
+	err = yaml.Unmarshal(contents, &i)
+	if err != nil {
+		return
+	}
+	m := i.(map[interface{}] interface{})
+	for k, v := range m {
+		switch k.(type) {
+		case string:
+		default:
+			fmt.Fprintf(os.Stderr, "Parse error")
+			err = fmt.Errorf("Parser error")
+			return
+		}
+		bt := buildTarget{ target: k.(string) }
+		step := v.(map[interface{}]interface{})
+		for s, t := range step {
+			switch s.(type) {
+			case string:
+			default:
+				err = fmt.Errorf("Parse error at %s", bt.target)
+				return
+			}
+			ss := s.(string)
+			switch ss {
+			case "base":
+				err = bt.appendBase(t)
+			case "run":
+				err = bt.appendRun(t)
+			case "install":
+				err = bt.appendInstall(t)
+			case "expand":
+				err = bt.appendExpand(t)
+			case "entrypoint", "cmd":
+				err = bt.appendCmd(t)
+			default:
+				err = fmt.Errorf("Parser error at %s: unknown keyword %s", bt.target, ss)
+			}
+			if err != nil {
+				return
+			}
+		}
+		r.Targets = append(r.Targets, bt)
+	}
+	return
+}
+
+// Build a recipe
+func (c *stackerConfig) Build() bool {
+	if len(os.Args) < 3 {
+		usage()
+		return false
+	}
+	buildFile := os.Args[2]
+	contents, err := ioutil.ReadFile(buildFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening recipe file %s: %v\n",
+			    buildFile, err)
+		return false
+	}
+	recipe, err := parseRecipe(contents)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing recipe: %v\n", err)
+		return false
+	}
+
+	fmt.Printf("Read recipe: %v\n", recipe)
+
+	// Now follow the recipe
 	return true
 }
 
@@ -176,7 +325,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "build":
-		if !doBuild() {
+		if !config.Build() {
 			os.Exit(1)
 		}
 	case "help":
