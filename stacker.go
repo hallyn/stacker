@@ -147,11 +147,11 @@ type buildRecipe struct {
 	Targets []buildTarget
 }
 
-func (bt *buildTarget) appendBase(i interface{}) error {
+func (bt *buildTarget) setBase(i interface{}) error {
 	switch i.(type) {
 	case string:
 	default:
-		return fmt.Errorf("Parse error at %s", bt.target)
+		return fmt.Errorf("Parse error reading base at %s", bt.target)
 	}
 	if bt.base != "" {
 		return fmt.Errorf("Duplicate base for %s", bt.target)
@@ -161,10 +161,40 @@ func (bt *buildTarget) appendBase(i interface{}) error {
 }
 
 func (bt *buildTarget) appendRun(i interface{}) error {
+	switch i.(type) {
+	case string:
+		bt.run = append(bt.run, i.(string))
+	case []interface{}:
+		for _, e := range i.([]interface{}) {
+			switch e.(type) {
+			case string:
+				bt.run = append(bt.run, e.(string))
+			default:
+				return fmt.Errorf("Parse error at run step for %s", bt.target)
+			}
+		}
+	default:
+		return fmt.Errorf("Parse error at run step for %s", bt.target)
+	}
 	return nil
 }
 
 func (bt *buildTarget) appendInstall(i interface{}) error {
+	switch i.(type) {
+	case string:
+		bt.install = append(bt.install, i.(string))
+	case []interface{}:
+		for _, e := range i.([]interface{}) {
+			switch e.(type) {
+			case string:
+				bt.install = append(bt.install, e.(string))
+			default:
+				return fmt.Errorf("Parse error at install step for %s", bt.target)
+			}
+		}
+	default:
+		return fmt.Errorf("Parse error at install step for %s", bt.target)
+	}
 	return nil
 }
 
@@ -178,16 +208,22 @@ func (bt *buildTarget) appendExpand(i interface{}) error {
 			case string:
 				bt.expand = append(bt.expand, e.(string))
 			default:
-				return fmt.Errorf("Parse error at %s for expand", bt.target)
+				return fmt.Errorf("Parse error at expand step for %s", bt.target)
 			}
 		}
 	default:
-		return fmt.Errorf("Parse error at %s for expand", bt.target)
+		return fmt.Errorf("Parse error at expand step for %s", bt.target)
 	}
 	return nil
 }
 
-func (bt *buildTarget) appendCmd(i interface{}) error {
+func (bt *buildTarget) setCmd(i interface{}) error {
+	switch i.(type) {
+	case string:
+	default:
+		return fmt.Errorf("Parse error reading entrypoint at %s", bt.target)
+	}
+	bt.entrypoint = i.(string)
 	return nil
 }
 
@@ -226,7 +262,7 @@ func parseRecipe(contents []byte) (r *buildRecipe, err error) {
 			ss := s.(string)
 			switch ss {
 			case "base":
-				err = bt.appendBase(t)
+				err = bt.setBase(t)
 			case "run":
 				err = bt.appendRun(t)
 			case "install":
@@ -234,7 +270,7 @@ func parseRecipe(contents []byte) (r *buildRecipe, err error) {
 			case "expand":
 				err = bt.appendExpand(t)
 			case "entrypoint", "cmd":
-				err = bt.appendCmd(t)
+				err = bt.setCmd(t)
 			default:
 				err = fmt.Errorf("Parser error at %s: unknown keyword %s", bt.target, ss)
 			}
