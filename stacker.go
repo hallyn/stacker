@@ -147,6 +147,34 @@ type buildRecipe struct {
 	Targets []buildTarget
 }
 
+func (bt *buildRecipe) HasTarget(q string) bool {
+	for _, t := range bt.Targets {
+		if t.target == q {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *stackerConfig) SanityCheck(r *buildRecipe) bool {
+	for k, v := range r.Targets {
+		if v.base == "" {
+			fmt.Fprintf(os.Stderr, "No base defined for target %s\n", k)
+			return false
+		}
+		if !c.OCITagExists(v.base) && !r.HasTarget(v.base) && v.base != "empty" {
+			fmt.Fprintf(os.Stderr, "Nonexistent base: %s\n", v.base)
+			return false
+		}
+		if len(v.run) == 0 && len(v.expand) == 0 && len(v.expand) == 0 && len(v.install) == 0 && v.entrypoint == "" {
+			fmt.Fprintf(os.Stderr, "No work for target: %s\n", k)
+			return false
+		}
+	}
+
+	return true
+}
+
 func (bt *buildTarget) setBase(i interface{}) error {
 	switch i.(type) {
 	case string:
@@ -283,6 +311,15 @@ func parseRecipe(contents []byte) (r *buildRecipe, err error) {
 	return
 }
 
+func alreadyBuilt(built []string, q string) bool {
+	for _, s := range built {
+		if q == s {
+			return true
+		}
+	}
+	return false
+}
+
 // Build a recipe
 func (c *stackerConfig) Build() bool {
 	if len(os.Args) < 3 {
@@ -302,9 +339,26 @@ func (c *stackerConfig) Build() bool {
 		return false
 	}
 
-	fmt.Printf("Read recipe: %v\n", recipe)
+	if !c.SanityCheck(recipe) {
+		return false
+	}
 
 	// Now follow the recipe
+	deferred := recipe.Targets
+	built := []string{}
+	for len(deferred) != 0 {
+		targets := deferred
+		deferred = []buildTarget{}
+		fmt.Printf("Built: %v; targets: %v\n", built, targets)
+		for _, t := range targets {
+			if t.base != "empty" && !alreadyBuilt(built, t.base) && !c.OCITagExists(t.base) {
+				deferred = append(deferred, t)
+				continue
+			}
+			built = append(built, t.target)
+		}
+	}
+
 	return true
 }
 
@@ -312,18 +366,26 @@ func (c *stackerConfig) Build() bool {
 // then I could simply use that here.
 // I might give in and use urfave as well one day, but the point about
 // general re-usability remains
-func doLs() bool {
+func (c *stackerConfig) ListTags() ([]string, error) {
 	image, err := dir.Open(config.OciDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening layout: %s\n", err)
-		return false
+		return []string{}, err
 	}
 	engine := casext.NewEngine(image)
 	defer image.Close()
 
 	names, err := engine.ListReferences(context.Background())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading layout tags: %s\n", err)
+		return []string{}, err
+	}
+
+	return names, nil
+}
+
+func (c *stackerConfig) Ls() bool {
+	names, err := c.ListTags()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing tags: %v\n", err)
 		return false
 	}
 
@@ -331,6 +393,19 @@ func doLs() bool {
 		fmt.Println(name)
 	}
 	return true
+}
+
+func (c *stackerConfig) OCITagExists(q string) bool {
+	ls, err := c.ListTags()
+	if err != nil {
+		return false
+	}
+	for _, tag := range ls {
+		if tag == q {
+			return true
+		}
+	}
+	return false
 }
 
 func doConfig() (ret bool) {
@@ -368,7 +443,7 @@ func main() {
 		usage()
 		os.Exit(0)
 	case "ls":
-		if !doLs() {
+		if !config.Ls() {
 			os.Exit(1)
 		}
 	case "config":
