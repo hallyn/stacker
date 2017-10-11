@@ -15,9 +15,11 @@ package main
 // limitations under the License.
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
+        "os/exec"
 
 	"github.com/openSUSE/umoci/oci/cas/dir"
 	"github.com/openSUSE/umoci/oci/casext"
@@ -25,10 +27,23 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+func dirExists(dir string) bool {
+	_, err := os.Stat(dir)
+	if err != nil && os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
 func usage() {
 	fmt.Printf("Usage: %s [COMMAND] [ARGUMENTS]\n", os.Args[0])
 	fmt.Printf("Commands\n")
+	fmt.Printf("   abort [-f]\n")
 	fmt.Printf("   build BUILDFILE\n")
+	fmt.Printf("   checkout TAG\n")
+	fmt.Printf("   checkin NEWTAG\n")
+	fmt.Printf("   chroot\n")
+	fmt.Printf("   lxc\n")
 	fmt.Printf("   config show\n")
 	fmt.Printf("   ls\n")
 }
@@ -121,7 +136,19 @@ func (c *stackerConfig) UnpackDir() string {
 		}
 		return c.BaseDir + "/btrfs/mounted"
 	default:
-		return c.BaseDir + "unpacked"
+		return c.BaseDir + "/unpacked"
+	}
+}
+
+func (c *stackerConfig) RootfsDir() string {
+	switch c.FsType {
+	case "btrfs":
+		if c.BtrfsMount != "" {
+			return c.BtrfsMount
+		}
+		return c.BaseDir + "/btrfs/mounted"
+	default:
+		return c.BaseDir + "/unpacked/rootfs"
 	}
 }
 
@@ -133,6 +160,17 @@ var config = &stackerConfig{
 
 // Unpack and repack operations.  These will be used by build,
 // unpack, checkout and checkin.
+// Obviously these are to be replaced with actual use of the 
+// umoci/oci libraries.
+func ExpandLayer(ociDir string, tag string, unpackDir string) bool {
+	layout := fmt.Sprintf("%s:%s", ociDir, tag)
+	cmd := exec.Command("umoci", "unpack", "--image", layout, unpackDir)
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed unpacking: %v\n", err)
+		return false
+	}
+	return true
+}
 
 type buildTarget struct {
 	target     string
@@ -424,6 +462,61 @@ func doConfig() (ret bool) {
 	return
 }
 
+func (c *stackerConfig) Checkout() bool {
+	if len(os.Args) < 3 {
+		usage()
+		return false
+	}
+	tag := os.Args[2]
+	switch c.FsType {
+	case "vfs":
+		if dirExists(c.UnpackDir()) {
+			fmt.Fprintf(os.Stderr, "%s is not empty\n", c.UnpackDir())
+			return false
+		}
+		return ExpandLayer(c.OciDir, tag, c.UnpackDir())
+	default:
+		fmt.Fprintf(os.Stderr, "Unsupported fs type")
+		return false
+	}
+	return true
+}
+
+func (c *stackerConfig) Abort() bool {
+	force := false
+	if len(os.Args) > 2 && (os.Args[2] == "-f"  || os.Args[2] == "--force") {
+		force = true
+	}
+	if !dirExists(c.UnpackDir()) {
+		fmt.Fprintf(os.Stderr, "Nothing to abort\n")
+		return true
+	}
+	if !force {
+		fmt.Printf("Really delete '%s'? (y/n)", c.UnpackDir())
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		res := string([]byte(input)[0])
+		if res != "y" && res != "Y" {
+			fmt.Println("Aborting.")
+			return true
+		}
+	}
+
+	switch c.FsType {
+	case "vfs":
+		cmd := exec.Command("rm", "-rf", c.UnpackDir())  // Whoa
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Removal failed: %v\n", err)
+			return false
+		}
+		return true
+	default:
+		fmt.Fprintf(os.Stderr, "Unsupported fs type")
+		return false
+	}
+	return true
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -448,6 +541,14 @@ func main() {
 		}
 	case "config":
 		if !doConfig() {
+			os.Exit(1)
+		}
+	case "checkout":
+		if !config.Checkout() {
+			os.Exit(1)
+		}
+	case "abort":
+		if !config.Abort() {
 			os.Exit(1)
 		}
 	default:
