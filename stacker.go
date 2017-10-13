@@ -21,6 +21,7 @@ import (
 	"os"
         "os/exec"
 
+	ispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/openSUSE/umoci/oci/cas/dir"
 	"github.com/openSUSE/umoci/oci/casext"
 	"golang.org/x/net/context"
@@ -67,7 +68,6 @@ func (c *stackerConfig) Initialize() error {
 		return nil
 	}
 
-	fmt.Printf("contents is %v\n", string(contents))
 	tmp := &stackerConfig{}
 	if err != nil && !os.IsNotExist(err) {
 		fmt.Printf("Error reading %s: %v\n", fileName, err)
@@ -79,7 +79,6 @@ func (c *stackerConfig) Initialize() error {
 			   fileName, err)
 		return err
 	}
-	fmt.Printf("tmp now has: %v\n", tmp)
 
 	// Deduce some relative paths
 	if tmp.BaseDir != "" && tmp.OciDir == "" {
@@ -168,6 +167,86 @@ func ExpandLayer(ociDir string, tag string, unpackDir string) bool {
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed unpacking: %v\n", err)
 		return false
+	}
+	return true
+}
+
+// copied from umoci's stat code.  This should all be replaced with some
+// simple API calls.
+func (c *stackerConfig) GetTagDigest(tag string) (string, error) {
+	image, err := dir.Open(c.OciDir)
+	if err != nil {
+		return "", err
+	}
+	defer image.Close()
+	engine := casext.NewEngine(image)
+	descriptorPaths, err := engine.ResolveReference(context.Background(), tag)
+	if err != nil {
+		return "", fmt.Errorf("Failed to get descriptor: %v", err)
+	}
+	if len(descriptorPaths) == 0 {
+		return "", fmt.Errorf("tag not found: %s", tag)
+	}
+	if len(descriptorPaths) > 1 {
+		return "", fmt.Errorf("tag is ambiguous: %s", tag)
+	}
+	manifestDescriptor := descriptorPaths[0].Descriptor()
+	if manifestDescriptor.MediaType != ispec.MediaTypeImageManifest {
+		return "", fmt.Errorf("invalid media type")
+	}
+
+	manifestBlob, err := engine.FromDescriptor(context.Background(), manifestDescriptor)
+	if err != nil {
+		return "", err
+	}
+	manifest, ok := manifestBlob.Data.(ispec.Manifest)
+	if !ok {
+		return "", fmt.Errorf("[internal error] unknown manifest blob type: %s", manifestBlob.MediaType)
+	}
+
+	configBlob, err := engine.FromDescriptor(context.Background(), manifest.Config)
+	if err != nil {
+		return "", fmt.Errorf("Error getting the config for %s\n", tag)
+	}
+	config, ok := configBlob.Data.(ispec.Image)
+	if !ok {
+		return "", fmt.Errorf("[internal error] unknown config blob type: %s", configBlob.MediaType)
+	}
+
+	digest := "[not found]"
+	// we just want the last entry
+	layerIdx := 0
+	for _, entry := range config.History {
+		if !entry.EmptyLayer {
+			digest = manifest.Layers[layerIdx].Digest.Encoded()
+			layerIdx++
+		}
+	}
+	return digest, nil
+}
+
+func (c *stackerConfig) btrfsClone(tag string) bool {
+	sha, err := c.GetTagDigest(tag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed opening tag: %v\n", err)
+		return false
+	}
+
+	lower := fmt.Sprintf("%s/%s", c.BtrfsMount, tag)
+	cmd := exec.Command("btrfs", "subvolume", "snapshot", lower, c.UnpackDir())
+	if err = cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "btrfs subvolume snapshot failed: %v\n", err)
+		return false
+	}
+	d := []byte(tag)
+	fileName := fmt.Sprintf("%s/btrfs.mounted_tag", c.BaseDir)
+	if err = ioutil.WriteFile(fileName, d, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving the checked out tag: %s\n", err)
+	}
+	d = []byte(sha)
+	fileName = fmt.Sprintf("%s/btrfs.mounted_sha", c.BaseDir)
+	if err = ioutil.WriteFile(fileName, d, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving the checked out hash: %s\n", err)
 	}
 	return true
 }
@@ -462,24 +541,31 @@ func doConfig() (ret bool) {
 	return
 }
 
+func (c *stackerConfig) checkout(tag string) bool {
+	if dirExists(c.UnpackDir()) {
+		fmt.Fprintf(os.Stderr, "%s is not empty\n", c.UnpackDir())
+		return false
+	}
+	switch c.FsType {
+	case "vfs":
+		return ExpandLayer(c.OciDir, tag, c.UnpackDir())
+	case "btrfs":
+		return c.btrfsClone(tag)
+	default:
+		fmt.Fprintf(os.Stderr, "Unsupported fs type")
+		return false
+	}
+	return true
+}
+
 func (c *stackerConfig) Checkout() bool {
 	if len(os.Args) < 3 {
 		usage()
 		return false
 	}
 	tag := os.Args[2]
-	switch c.FsType {
-	case "vfs":
-		if dirExists(c.UnpackDir()) {
-			fmt.Fprintf(os.Stderr, "%s is not empty\n", c.UnpackDir())
-			return false
-		}
-		return ExpandLayer(c.OciDir, tag, c.UnpackDir())
-	default:
-		fmt.Fprintf(os.Stderr, "Unsupported fs type")
-		return false
-	}
-	return true
+
+	return c.checkout(tag)
 }
 
 func (c *stackerConfig) Abort() bool {
