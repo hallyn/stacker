@@ -251,6 +251,25 @@ func (c *stackerConfig) AbortCheckout(force bool) (failed bool, err error) {
 	return false, nil
 }
 
+// return the digest of all fs layers for tag, in order
+func (c stackerConfig)TagFsLayers(tag string) ([]string, error) {
+	image := fmt.Sprintf("%s:%s", c.OciDir, tag)
+	cmd := exec.Command("umoci", "stat", "--image", image)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	retlines := []string{}
+	if err := cmd.Run(); err != nil {
+		return retlines, err
+	}
+	lines := strings.Split(buf.String(), "\n")
+	for _, line := range lines {
+		if line[0:7] == "sha256:" {
+			retlines = append(retlines, line[7:])
+		}
+	}
+	return retlines, nil
+}
+
 //
 // desired API functionality:
 // image, err := umoci.Open(c.OciDir, tag)
@@ -293,5 +312,14 @@ func (c *stackerConfig) LoUnSetup() error {
 		return btrfs_loUnsetup(c.LoFile, c.BtrfsMount)
 	default:
 		return fmt.Errorf("Loopback setup not supported for %s", c.FsType)
+	}
+}
+
+func (c *stackerConfig) Unpack() error {
+	switch c.FsType {
+	case "btrfs":
+		return btrfs_Unpack(c)
+	default:
+		return fmt.Errorf("CoW unpacking not supported for %s", c.FsType)
 	}
 }

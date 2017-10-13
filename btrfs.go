@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
         "syscall"
 )
 
@@ -91,4 +92,79 @@ func btrfs_loUnsetup(lofile, mnt string) error {
 		}
 	}
 	return nil
+}
+
+// desired umoci API:
+// image, err := umoci.OpenLayout(ocidir)
+// defer image.Close()
+// for _, tag := image.ListTags() {
+//	prevlayer = ""
+//	for _, l := image.ListTagLayers(tag) {
+// 		if prevlayer == "" {
+//			create_btrfs_subvolume(mnt, image.GetTagLayerDigest(l))
+//		} else {
+//			prevsha = image.GetTagLayerDigest(prevlayer)
+//			newsha = image.GetTagLayerDigest(l)
+//			clone_btrfs_subvolume(mnt, prevsha, newsha)
+//			image.Unpack(newsha, fmt.Sprintf("%s/%s", mnt, newsha)
+//		}
+// }
+func btrfs_Unpack(c *stackerConfig) error {
+	tags, err := c.ListTags()
+	if err != nil {
+		return err
+	}
+	tmpDir, err := ioutil.TempDir("", "stacker_")
+	if err != nil {
+		return err
+	}
+	tmpRootfs := fmt.Sprintf("%s/rootfs", tmpDir)
+	for _, tag := range(tags) {
+		os.RemoveAll(tmpDir)
+		os.MkdirAll(tmpDir, 0755)
+		layers, err := c.TagFsLayers(tag)
+		if err != nil {
+			return err
+		}
+		prevlayer := ""
+		for _, l := range layers {
+			if prevlayer == "" {
+				if err := CreateSubvol(c.BtrfsMount, l); err != nil {
+					return err
+				}
+			} else {
+				if err := SnapshotSubvol(c.BtrfsMount, prevlayer, l); err != nil {
+					return err
+				}
+			}
+
+			image := fmt.Sprintf("%s:%s", c.OciDir, l)
+			// this will fail rihgt now as umoci does not support it
+			cmd := exec.Command("umoci", "unpack", "--image", image, tmpDir)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+
+			destDir := filepath.Join(c.BtrfsMount, l)
+			cmd = exec.Command("rsync", "-Hax", "--numeric-ids", "--sparse",
+					    "--delete", "--devices", tmpRootfs, destDir)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func CreateSubvol(mnt, dir string) error {
+	dest := filepath.Join(mnt, dir)
+	cmd := exec.Command("btrfs", "subvolume", "create", dest)
+	return cmd.Run()
+}
+
+func SnapshotSubvol(mnt, old, dir string) error {
+	src := filepath.Join(mnt, old)
+	dest := filepath.Join(mnt, dir)
+	cmd := exec.Command("btrfs", "subvolume", "snapshot", src, dest)
+	return cmd.Run()
 }
