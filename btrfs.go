@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+        "syscall"
 )
 
 func btrfsClone(c *stackerConfig, tag string) bool {
@@ -47,3 +48,47 @@ func btrfsClone(c *stackerConfig, tag string) bool {
 	return true
 }
 
+func IsMountpoint(mnt string) bool {
+	cmd := exec.Command("mountpoint", "-q", mnt)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func btrfs_loSetup(lofile, mnt string) error {
+	if !FileExists(lofile) {
+		cmd := exec.Command("truncate", "-s", "20G", lofile)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		cmd = exec.Command("mkfs.btrfs", lofile)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+	if !IsMountpoint(mnt) {
+		if err := os.MkdirAll(mnt, 0755); err != nil {
+			return err
+		}
+		cmd := exec.Command("mount", "-o", "loop", "-t", "btrfs", lofile, mnt)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func btrfs_loUnsetup(lofile, mnt string) error {
+	if IsMountpoint(mnt) {
+		if err := syscall.Unmount(mnt, syscall.MNT_DETACH); err != nil {
+			return err
+		}
+	}
+	if FileExists(lofile) {
+		if err := os.Remove(lofile); err != nil {
+			return err
+		}
+	}
+	return nil
+}

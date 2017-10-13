@@ -277,3 +277,21 @@ func (c *stackerConfig) GetTagDigest(tag string) (string, error) {
 	return "", fmt.Errorf("not found")
 }
 
+
+func (c *stackerConfig) LoSetup() error {
+	switch c.FsType {
+	case "btrfs":
+		return btrfs_loSetup(c.LoFile, c.BtrfsMount)
+	default:
+		return fmt.Errorf("Loopback setup not supported for %s", c.FsType)
+	}
+}
+
+func (c *stackerConfig) LoUnSetup() error {
+	switch c.FsType {
+	case "btrfs":
+		return btrfs_loUnsetup(c.LoFile, c.BtrfsMount)
+	default:
+		return fmt.Errorf("Loopback setup not supported for %s", c.FsType)
+	}
+}

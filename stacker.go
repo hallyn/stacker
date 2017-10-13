@@ -19,9 +19,25 @@ import (
 	"os"
 )
 
-func dirExists(dir string) bool {
-	_, err := os.Stat(dir)
+func FileExists(dir string) bool {
+	stat, err := os.Stat(dir)
 	if err != nil && os.IsNotExist(err) {
+		return false
+	}
+	if stat.IsDir() {
+		fmt.Fprintf(os.Stderr, "ERROR: %s exists but is a directory")
+		return false
+	}
+	return true
+}
+
+func dirExists(dir string) bool {
+	stat, err := os.Stat(dir)
+	if err != nil && os.IsNotExist(err) {
+		return false
+	}
+	if !stat.IsDir() {
+		fmt.Fprintf(os.Stderr, "ERROR: %s exists but is not a directory")
 		return false
 	}
 	return true
@@ -30,14 +46,16 @@ func dirExists(dir string) bool {
 func usage() {
 	fmt.Printf("Usage: %s [COMMAND] [ARGUMENTS]\n", os.Args[0])
 	fmt.Printf("Commands\n")
-	fmt.Printf("   abort [-f]\n")
-	fmt.Printf("   build BUILDFILE\n")
-	fmt.Printf("   checkout TAG\n")
-	fmt.Printf("   checkin NEWTAG\n")
-	fmt.Printf("   chroot\n")
-	fmt.Printf("   lxc\n")
-	fmt.Printf("   config show\n")
-	fmt.Printf("   ls\n")
+	fmt.Printf("   abort [-f]: remove the checked-out rootfs\n")
+	fmt.Printf("   build BUILDFILE: build OCI tags per the recipe in BUILDFILE\n")
+	fmt.Printf("   checkin NEWTAG: check in the checked-out rootfs as NEWTAG\n")
+	fmt.Printf("   checkout TAG: check out the rootfs for OCI tag TAG\n")
+	fmt.Printf("   config show: show current configuration\n")
+	fmt.Printf("   chroot: run a chroot in checked-out fs\n")
+	fmt.Printf("   ls: list the OCi tags\n")
+	fmt.Printf("   lxc: open a container in checked-out fs\n")
+	fmt.Printf("   losetup: set up loopback for configured fstype\n")
+	fmt.Printf("   lounsetup: undo loopback setup for configured fstype\n")
 }
 
 var config = &stackerConfig{
@@ -154,6 +172,16 @@ func main() {
 		}
 	case "abort":
 		if !Abort(config) {
+			os.Exit(1)
+		}
+	case "losetup":
+		if err := config.LoSetup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "lounsetup":
+		if err := config.LoUnSetup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	default:
